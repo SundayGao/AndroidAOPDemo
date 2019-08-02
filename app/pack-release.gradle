@@ -1,0 +1,213 @@
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
+ext {
+    APP_NAME = "fdd-v11.7.0-fdd-debug.apk"
+    BASE_NET_URL = "http://ci-sz.fangdd.net/view/%E8%87%AA%E5%8A%A8%E6%89%93%E5%8C%85/job/agent/job/fangdd-agent-app-android/view/C%E7%AB%AF/job/package/job/develop_debug/ws/app/build/outputs/apk/fdd/debug/"
+    BASE = "../reinforce/"
+    JAR = BASE + "jiagu.jar"
+    NAME = "luddite2017"//360加固账号
+    PASSWORD = "chy520ss"//360加固密码
+    KEY_PATH = "/Users/Yvan/Documents/AndroidWorkspace/fdd-app-android/app/fangdd" //密钥路径
+    KEY_PASSWORD = "fangdd11" //密钥密码
+    ALIAS = "fangdd" //密钥别名
+    ALIAS_PASSWORD = "fangdd11" //别名密码
+    OUTPUT_PATH = "build/outputs/release/" //加固后所有apk的保存路径
+    CHANNEL_CONFIG = BASE + "channel/"//保存渠道配置
+}
+
+//构建发布到生产环境的所有渠道apk,生成压缩文件 pccb-x.x.x.zip
+task packageRelease {
+//    dependsOn("assembleRelease")
+    downLoadApkFileFromNet()
+
+    doLast {
+        List<ApkFile> apkFiles = findApkFiles("release")
+        if (apkFiles.size() == 0) {
+            throw new RuntimeException("no apk files has found!")
+        }
+
+        String[] nameSlice = apkFiles.get(0).file.name.split("-")
+        File outputDir = new File(OUTPUT_PATH + nameSlice[0] + "-" + nameSlice[1])
+        if (outputDir.exists()) {
+            if (!outputDir.delete()) {
+                throw new RuntimeException("delete outputDir failure!")
+            }
+        }
+
+        if (!outputDir.mkdirs()) {
+            throw new RuntimeException("make outputDir failure!")
+        }
+
+        for (int i = 0; i < apkFiles.size(); i++) {
+            ApkFile apkFile = apkFiles.get(i)
+            reinforce(apkFile.file, outputDir.getPath(), apkFile.channel)
+        }
+
+//        filterApk(outputDir)
+//        renameApk(outputDir)
+//        compressDir(outputDir)
+    }
+}
+
+
+class ApkFile {
+    String channel
+    File file
+}
+
+/**
+ * 从网络中下载打包好的release包
+ * @return
+ */
+def downLoadApkFileFromNet() {
+    exec {
+        commandLine "curl", "-O", BASE_NET_URL + APP_NAME
+    }
+}
+
+/**
+ * 查找所有apk
+ * @param buildType release 或者 debug
+ * @return ArrayList <ApkFile>
+ */
+def findApkFiles(String buildType) {
+    println "findApkFiles buildType: " + buildType
+
+    File apkDir = new File("build/outputs/apk")
+    File[] channelDirs = apkDir.listFiles()
+
+    List<ApkFile> apkFiles = new ArrayList<>()
+    for (int i = 0; i < channelDirs.length; i++) {
+        File channelDir = channelDirs[i]
+        ApkFile apkFile = new ApkFile()
+        apkFile.channel = channelDir.name
+
+        File[] files = new File(channelDir, "/" + buildType).listFiles()
+        if (files == null || files.length == 0) {
+            continue
+        }
+        File lastFile = files[files.length - 1]
+        if (!lastFile.name.endsWith(".apk")) {
+            continue
+        }
+
+        apkFile.file = lastFile
+        apkFiles.add(apkFile)
+    }
+
+    return apkFiles
+}
+
+/**
+ * 360加固
+ * @param apk 加固的原始apk File
+ * @param outputPath 输出目录
+ * @param channel 原始渠道(baidu,yyb,...)
+ */
+def reinforce(apk, outputPath, channel) {
+    println "reinforce apk:" + apk
+
+    //jiagu.db中缓存了多渠道信息，如果不删除会合并到当前多渠道配置
+    def db = new File(BASE + "jiagu.db")
+    if (db.exists()) {
+        if (!db.delete()) {
+            throw new RuntimeException("delete jiagu.db failure!")
+        }
+    }
+
+    exec {
+        commandLine "../reinforce/java/bin/java", "-jar", JAR, "-login", NAME, PASSWORD
+    }
+    exec {
+        commandLine "../reinforce/java/bin/java", "-jar", JAR, "-importsign", KEY_PATH, KEY_PASSWORD, ALIAS, ALIAS_PASSWORD
+    }
+    exec {
+        commandLine "../reinforce/java/bin/java", "-jar", JAR, "-showsign"
+    }
+    exec {
+        commandLine "../reinforce/java/bin/java", "-jar", JAR, "-importmulpkg", CHANNEL_CONFIG + "template_" + channel + ".txt"
+    }
+    exec {
+        commandLine "../reinforce/java/bin/java", "-jar", JAR, "-showmulpkg"
+    }
+    exec {
+        commandLine "../reinforce/java/bin/java", "-jar", JAR, "-jiagu", apk, outputPath, "-autosign", "-automulpkg"
+    }
+}
+
+/**
+ * 删除一些临时文件
+ * @param outputDir apk保存目录
+ */
+def filterApk(File outputDir) {
+    println "*************** filter apk ***************"
+
+    File[] files = outputDir.listFiles()
+    for (int i = 0; i < files.length; i++) {
+        File file = files[i]
+        String fileName = file.getName()
+
+        if (fileName.endsWith("jiagu_sign.apk") || fileName.endsWith("temp.apk")
+                || !fileName.endsWith("_sign.apk")) {
+            file.delete()
+        }
+    }
+}
+
+/**
+ * 修改所有apk文件名
+ * @param outputDir apk保存目录
+ */
+def renameApk(File outputDir) {
+    println "*************** rename apk ***************"
+
+    File[] files = outputDir.listFiles()
+    for (int i = 0; i < files.length; i++) {
+        File file = files[i]
+        String fileName = file.getName()
+
+        String[] prefixArr = fileName.split("-")
+        String[] suffixArr = fileName.split("_")
+
+        String rename = prefixArr[0] + "-" + prefixArr[1] +
+                "-" + (i + 1) + "-" + suffixArr[suffixArr.length - 2] + ".apk"
+        file.renameTo(file.getParent() + "/" + rename)
+
+        println "rename apk: " + fileName + " --> " + rename
+    }
+}
+
+/**
+ * zip压缩apk保存目录，生成 build/outputs/release/pccb-x.x.x.zip
+ * @param outputDir apk保存目录
+ */
+def compressDir(File outputDir) {
+    println "*************** compress apk output dir ***************"
+
+    File zipFile = new File(outputDir.getParent() + "/" + outputDir.getName() + ".zip")
+    if (zipFile.exists()) {
+        zipFile.delete()
+    }
+
+    ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))
+    File[] files = outputDir.listFiles()
+    for (int i = 0; i < files.length; i++) {
+        File file = files[i]
+
+        byte[] bf = new byte[8192]
+        FileInputStream fis = new FileInputStream(file)
+        zos.putNextEntry(new ZipEntry(file.getName()))
+
+        int len
+        while ((len = fis.read(bf)) > 0) {
+            zos.write(bf, 0, len)
+        }
+        zos.flush()
+        fis.close()
+    }
+
+    zos.close()
+}
+
+
